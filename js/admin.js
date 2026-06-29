@@ -138,6 +138,23 @@ function applyAdminUI() {
   // Toggle Subscribers tab
   const subNav = document.getElementById('nav-subscribers');
   if (subNav) subNav.style.display = isAdmin ? 'block' : 'none';
+
+  if (typeof refreshVisibilityNavigation === 'function') {
+    refreshVisibilityNavigation(window._visibilitySettings || null).catch(() => { });
+  }
+}
+
+async function togglePropertyVisibility(type, id, currentVisible) {
+  if (!Admin.isLoggedIn()) return;
+
+  try {
+    await DB[type].update(id, { isVisible: !currentVisible });
+    showToast(currentVisible ? 'Card hidden from visitors.' : 'Card shown to visitors.', 'success');
+    if (window._currentPage) window._currentPage();
+  } catch (e) {
+    console.error('Failed to toggle property visibility:', e);
+    showToast('Failed to update card visibility.', 'error');
+  }
 }
 
 // ---- Admin Modals ----
@@ -421,6 +438,13 @@ function buildFormHtml(type, d = {}, areas = []) {
       <label class="form-label">Title *</label>
       <input class="form-control" id="pf-title" placeholder="e.g. Prime Plot in Koramangala" value="${esc(d.title || '')}">
     </div>
+    <div class="form-group">
+      <label class="checkbox-group" style="align-items:center; gap:10px; margin:4px 0 2px; cursor:pointer;">
+        <input type="checkbox" id="pf-isVisible" ${d.isVisible === false ? '' : 'checked'}>
+        <span class="form-label" style="margin-bottom:0">Visible on website</span>
+      </label>
+      <small style="display:block;color:var(--mid-grey);margin-top:6px;">Uncheck to hide this card from visitors while keeping it in the admin panel.</small>
+    </div>
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">District</label>
@@ -434,6 +458,23 @@ function buildFormHtml(type, d = {}, areas = []) {
     <div class="form-group">
       <label class="form-label">Location *</label>
       <input class="form-control" id="pf-location" placeholder="e.g. Whitefield, Bangalore" value="${esc(d.location || '')}">
+    </div>`;
+
+  const brochureHtml = `
+    <div class="form-group">
+      <label class="form-label">Brochure / PDF <span style="color:var(--mid-grey);font-weight:400">(optional)</span></label>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <label class="btn btn-ghost" for="pf-brochure-input" style="cursor:pointer;border-color:var(--light-grey);width:max-content;">
+          📄 Upload PDF
+          <input type="file" id="pf-brochure-input" accept="application/pdf" style="display:none" onchange="handleBrochureUpload(event)">
+        </label>
+        <div id="pf-brochure-status" style="font-size:0.85rem;color:var(--mid-grey);">
+          ${d.brochureName ? `Current brochure: ${esc(d.brochureName)}` : 'No brochure uploaded yet.'}
+        </div>
+        <input type="hidden" id="pf-brochure-url" value="${esc(d.brochureUrl || '')}">
+        <input type="hidden" id="pf-brochure-name" value="${esc(d.brochureName || '')}">
+        <input type="hidden" id="pf-brochure-path" value="${esc(d.brochurePath || '')}">
+      </div>
     </div>`;
 
   const getPriceAndDesc = (type, d) => `
@@ -508,7 +549,7 @@ function buildFormHtml(type, d = {}, areas = []) {
     </div>`;
 
   if (type === 'plots') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Area</label>
@@ -557,7 +598,7 @@ function buildFormHtml(type, d = {}, areas = []) {
   }
 
   if (type === 'flats') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">BHK Type *</label>
@@ -600,7 +641,7 @@ function buildFormHtml(type, d = {}, areas = []) {
   }
 
   if (type === 'apartments') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Total Acres</label>
@@ -647,7 +688,7 @@ function buildFormHtml(type, d = {}, areas = []) {
   }
 
   if (type === 'villas') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Bedrooms</label>
@@ -684,7 +725,7 @@ function buildFormHtml(type, d = {}, areas = []) {
         </select>
       </div>` + getPriceAndDesc(type, d);
   } else if (type === 'commercial') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Super Built-up Area</label>
@@ -804,6 +845,7 @@ function collectFormData(type) {
   const base = {
     companyLogoUrl,
     title: g('pf-title'),
+    isVisible: document.getElementById('pf-isVisible') ? document.getElementById('pf-isVisible').checked : true,
     location: g('pf-location'),
     district: g('pf-district'),
     village: g('pf-village'),
@@ -817,6 +859,9 @@ function collectFormData(type) {
     legalBenefits: g('pf-legalBenefits'),
     investmentPotential: g('pf-investmentPotential'),
     videoUrl: g('pf-videoUrl'),
+    brochureUrl: g('pf-brochure-url'),
+    brochureName: g('pf-brochure-name'),
+    brochurePath: g('pf-brochure-path'),
     images,           // array of up to 15 base64/URL strings
     imageUrl: images[0] || '',   // keep for backward compat with card renderer
   };
@@ -1014,6 +1059,52 @@ async function handleCompanyLogoUpload(event) {
     showToast('Failed to load company logo', 'error');
   }
   event.target.value = '';
+}
+
+async function handleBrochureUpload(event) {
+  const file = event.target.files[0];
+  const status = document.getElementById('pf-brochure-status');
+  if (!file) return;
+  if (file.type !== 'application/pdf') {
+    showToast('Please select a PDF brochure.', 'error');
+    event.target.value = '';
+    return;
+  }
+  
+  if (status) {
+    status.textContent = `Uploading: ${file.name}...`;
+  }
+  
+  const formData = new FormData();
+  formData.append('brochure', file);
+  
+  try {
+    const response = await fetch('/api/upload-brochure', {
+      method: 'POST',
+      body: formData
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      document.getElementById('pf-brochure-url').value = result.brochureUrl;
+      document.getElementById('pf-brochure-name').value = result.brochureName;
+      document.getElementById('pf-brochure-path').value = result.brochurePath;
+      if (status) {
+        status.textContent = `✅ Uploaded: ${result.brochureName}`;
+      }
+      showToast('Brochure uploaded successfully!', 'success');
+    } else {
+      throw new Error(result.error || 'Upload failed');
+    }
+  } catch (error) {
+    console.error('Brochure upload error:', error);
+    showToast('Failed to upload brochure: ' + error.message, 'error');
+    if (status) {
+      status.textContent = 'Upload failed. Please try again.';
+    }
+    event.target.value = '';
+  }
 }
 
 function addImagePreview(src, grid) {
@@ -1505,3 +1596,113 @@ window.publishMarketingPost = async function() {
     btn.innerHTML = '🚀 Publish to Socials';
   }
 };
+
+/* =========================================================
+   SECTION VISIBILITY MANAGER
+   Stores visibility settings in Firestore (settings collection,
+   type: 'section_visibility').
+   ========================================================= */
+
+const _VISIBILITY_CATEGORIES = [
+  { key: 'plots',       label: 'Plots',       icon: '🌿' },
+  { key: 'villas',      label: 'Villas',      icon: '🏡' },
+  { key: 'flats',       label: 'Flats',       icon: '🏢' },
+  { key: 'apartments',  label: 'Apartments',  icon: '🏢' },
+  { key: 'commercial',  label: 'Commercial',  icon: '🏙️' },
+];
+
+const _VISIBILITY_ONDEMAND = [
+  { key: 'od_apartments', label: 'Apartments on Demand', icon: '🏢' },
+  { key: 'od_plots',      label: 'Plots on Demand',      icon: '🌿' },
+  { key: 'od_villas',     label: 'Villas on Demand',     icon: '🏡' },
+];
+
+/**
+ * Fetch the current visibility settings doc from Firestore.
+ * Returns an object like { plots: true, villas: false, od_plots: true, ... }
+ * Defaults to true (visible) for all keys if no doc exists.
+ */
+async function getVisibilitySettings() {
+  try {
+    const allSettings = await DB.settings.get();
+    const doc = allSettings.find(s => s.type === 'section_visibility');
+    if (doc) return doc;
+  } catch (e) {
+    console.error('Failed to load visibility settings:', e);
+  }
+  // Default: everything visible
+  const defaults = { type: 'section_visibility' };
+  [..._VISIBILITY_CATEGORIES, ..._VISIBILITY_ONDEMAND].forEach(item => {
+    defaults[item.key] = true;
+  });
+  return defaults;
+}
+
+/** Build a toggle row HTML for the visibility modal */
+function _buildToggleRow(item, settings) {
+  const checked = settings[item.key] !== false; // default to true
+  return `
+  <div class="vis-toggle-row">
+    <div class="vis-toggle-label">
+      <span class="vis-icon">${item.icon}</span>
+      <span>${item.label}</span>
+    </div>
+    <label class="vis-switch">
+      <input type="checkbox" id="vis-chk-${item.key}" ${checked ? 'checked' : ''}>
+      <span class="vis-switch-track"></span>
+    </label>
+  </div>`;
+}
+
+/** Open the Section Visibility Manager modal */
+async function openVisibilityModal() {
+  closeModal('admin-logout-modal');
+
+  const catContainer   = document.getElementById('vis-categories');
+  const odContainer    = document.getElementById('vis-ondemand');
+  if (!catContainer || !odContainer) return;
+
+  catContainer.innerHTML = '<div style="padding:12px;text-align:center;color:var(--mid-grey)">Loading...</div>';
+  odContainer.innerHTML  = '';
+  openModal('visibility-modal');
+
+  const settings = await getVisibilitySettings();
+  window._visibilityDocId = settings.id || null;
+
+  catContainer.innerHTML = _VISIBILITY_CATEGORIES.map(item => _buildToggleRow(item, settings)).join('');
+  odContainer.innerHTML  = _VISIBILITY_ONDEMAND.map(item => _buildToggleRow(item, settings)).join('');
+}
+
+/** Save the current toggle state back to Firestore */
+async function saveVisibilitySettings() {
+  if (!Admin.isLoggedIn()) return;
+
+  const btn = document.getElementById('vis-save-btn');
+  if (btn) btn.disabled = true;
+
+  const allKeys = [..._VISIBILITY_CATEGORIES, ..._VISIBILITY_ONDEMAND];
+  const updates = { type: 'section_visibility' };
+  allKeys.forEach(item => {
+    const chk = document.getElementById(`vis-chk-${item.key}`);
+    updates[item.key] = chk ? chk.checked : true;
+  });
+
+  try {
+    if (window._visibilityDocId) {
+      await DB.settings.update(window._visibilityDocId, updates);
+    } else {
+      const added = await DB.settings.add(updates);
+      window._visibilityDocId = added.id;
+    }
+    // Invalidate cache so next home-page render picks up changes
+    clearCache('settings');
+    showToast('✅ Visibility settings saved!', 'success');
+    closeModal('visibility-modal');
+    if (window._currentPage) window._currentPage();
+  } catch (e) {
+    console.error('Failed to save visibility settings:', e);
+    showToast('Failed to save settings.', 'error');
+  }
+
+  if (btn) btn.disabled = false;
+}

@@ -17,14 +17,14 @@
 |-------------------|--------------------------------------------------------------|
 | **App Type**      | Single Page Application (SPA)                                |
 | **Routing**       | Hash-based (`#plots`, `#flats`, etc.) with `history.pushState` |
-| **Data Storage**  | Browser `localStorage` (no backend, no database)             |
-| **Image Storage** | Base64 via `FileReader` API → `localStorage`                 |
+| **Data Storage**  | Firebase Firestore for listings, settings, and admin data    |
+| **Image Storage** | Remote image URLs and uploaded media handled through Firebase / external services |
 
 ---
 
 ## Key Browser APIs Used
 
-- **`localStorage`** — saves listings, reviews, admin session, and agent profile photo
+- **Firebase Firestore** — saves listings, reviews, admin session data, and visibility settings
 - **`FileReader`** — converts local images to base64 for property photos and agent photo upload
 - **`history.pushState`** — SPA navigation without page reloads
 - **YouTube `<iframe>` embed** — property video tours in listing detail view
@@ -75,8 +75,8 @@ TestProj/
 
 - ❌ No Node.js / npm / package manager
 - ❌ No React, Vue, Angular, or any JS framework
-- ❌ No backend server or API
-- ❌ No database
+- ✅ Node.js / Express backend for SMS and social publishing proxy
+- ✅ Firebase Firestore database
 - ❌ No build tools (Webpack, Vite, Parcel, etc.)
 - ❌ No internet connection required (except Google Fonts & YouTube embeds)
 

@@ -711,6 +711,12 @@ button {
   border-color: rgba(201, 168, 76, 0.3); /* Subtle gold border on hover */
 }
 
+.property-card-hidden {
+  border-style: dashed;
+  border-color: rgba(13, 46, 79, 0.18);
+  opacity: 0.92;
+}
+
 .card-image-wrap {
   position: relative;
   height: 220px;
@@ -762,6 +768,20 @@ button {
   padding: 6px 14px;
   border-radius: var(--radius-sm);
   font-family: 'Playfair Display', serif;
+}
+
+.card-hidden-chip {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(13, 46, 79, 0.86);
+  color: var(--white);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  border-radius: 999px;
+  z-index: 2;
 }
 
 .card-body {
@@ -858,6 +878,17 @@ button {
   color: var(--navy);
 }
 
+.btn-visibility-toggle {
+  background: rgba(13, 46, 79, 0.08);
+  color: var(--navy);
+  border: none;
+}
+
+.btn-visibility-toggle:hover {
+  background: var(--navy);
+  color: var(--white);
+}
+
 .btn-del {
   background: rgba(231, 76, 60, 0.1);
   color: var(--danger);
@@ -867,6 +898,70 @@ button {
 .btn-del:hover {
   background: var(--danger);
   color: white;
+}
+
+.brochure-panel {
+  margin-top: 20px;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--light-grey);
+  background: var(--off-white);
+}
+
+.brochure-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.brochure-label {
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--gold-dark);
+  font-weight: 700;
+}
+
+.brochure-title {
+  margin: 0;
+  font-family: 'Playfair Display', serif;
+  color: var(--navy);
+  font-size: 1.05rem;
+}
+
+.brochure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.brochure-viewer-shell {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(13, 46, 79, 0.1);
+  background: var(--white);
+}
+
+.brochure-viewer-frame {
+  display: block;
+  width: 100%;
+  height: 260px;
+  border: 0;
+  background: var(--white);
+}
+
+@media (max-width: 640px) {
+  .brochure-panel-header {
+    flex-direction: column;
+  }
+
+  .brochure-actions {
+    justify-content: flex-start;
+  }
 }
 
 /* ---- Empty State ---- */
@@ -3210,4 +3305,142 @@ textarea.form-control {
     padding: 40px 0 24px;
   }
 }
-
+
+/* =========================================================
+   SECTION VISIBILITY MANAGER — Admin Toggle UI
+   ========================================================= */
+
+.vis-section-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--mid-grey);
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--light-grey);
+}
+
+.vis-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vis-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--off-white);
+  transition: background 0.2s;
+}
+
+.vis-toggle-row:hover {
+  background: #e8ecf0;
+}
+
+.vis-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--navy);
+}
+
+.vis-toggle-label .vis-icon {
+  font-size: 1.3rem;
+  width: 28px;
+  text-align: center;
+}
+
+/* Toggle Switch */
+.vis-switch {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.vis-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.vis-switch-track {
+  position: absolute;
+  inset: 0;
+  background: #ccc;
+  border-radius: 26px;
+  cursor: pointer;
+  transition: background 0.25s;
+}
+
+.vis-switch-track::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.25s;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.vis-switch input:checked + .vis-switch-track {
+  background: var(--gold);
+}
+
+.vis-switch input:checked + .vis-switch-track::before {
+  transform: translateX(20px);
+}
+
+/* Hidden section indicator shown to admins on the home page */
+.vis-hidden-overlay {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(13,46,79,0.04) 0px,
+    rgba(13,46,79,0.04) 8px,
+    transparent 8px,
+    transparent 16px
+  );
+  border: 2px dashed rgba(13,46,79,0.2);
+  border-radius: inherit;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.vis-hidden-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--navy);
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 20px;
+  letter-spacing: 0.05em;
+  z-index: 2;
+  border: none;
+  cursor: pointer;
+  pointer-events: auto;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.vis-hidden-badge:hover {
+  background: var(--gold);
+  color: var(--navy);
+}
+
+
