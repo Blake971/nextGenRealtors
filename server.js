@@ -8,13 +8,64 @@ const fetch = require('node-fetch');
 const multer = require('multer');
 const FormData = require('form-data');
 const { google } = require('googleapis');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const stream = require('stream');
 
 const app = express();
-const PORT = 3001;
+const PORT = Number(process.env.PORT) || 3001;
+const MAX_BROCHURE_SIZE = 20 * 1024 * 1024;
+const MAX_BROCHURES = 10;
+const BROCHURE_DIR = path.join(__dirname, 'uploads', 'brochures');
 
-// ---- Storage Config for Multer (In-Memory) ----
+fs.mkdirSync(BROCHURE_DIR, { recursive: true });
+app.use(express.json({ limit: '1mb' }));
+
+// ---- Storage Config for Multer ----
 const upload = multer({ storage: multer.memoryStorage() });
+
+// ---- Storage Config for PDF Uploads (Disk Storage) ----
+const pdfStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, BROCHURE_DIR);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+    cb(null, `${uniqueSuffix}.pdf`);
+  }
+});
+const pdfUpload = multer({
+  storage: pdfStorage,
+  limits: {
+    fileSize: MAX_BROCHURE_SIZE,
+    files: MAX_BROCHURES
+  },
+  fileFilter: function (req, file, cb) {
+    const isPdf = file.mimetype === 'application/pdf' && path.extname(file.originalname).toLowerCase() === '.pdf';
+    if (!isPdf) {
+      const error = new Error('Only PDF files are allowed.');
+      error.code = 'INVALID_FILE_TYPE';
+      return cb(error);
+    }
+    cb(null, true);
+  }
+});
+
+function removeUploadedFiles(files = []) {
+  for (const file of files) {
+    fs.rm(file.path, { force: true }, () => {});
+  }
+}
+
+function brochureInfo(file) {
+  return {
+    url: `/uploads/brochures/${file.filename}`,
+    name: file.originalname,
+    path: path.posix.join('uploads', 'brochures', file.filename),
+    size: file.size
+  };
+}
 
 // ---- Your Fast2SMS API Key ----
 const FAST2SMS_API_KEY = 'G2Odr3luxCqjJ7cUnwbBv5gfVyLFzQM91Hie0oskIWaDYNXh6mUnloSROW5kGiPA19hyJQKpETmMgDBZ';
@@ -22,14 +73,14 @@ const FAST2SMS_API_KEY = 'G2Odr3luxCqjJ7cUnwbBv5gfVyLFzQM91Hie0oskIWaDYNXh6mUnlo
 // ---- Allow CORS & Security Headers ----
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   // Security Headers
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://apis.google.com https://accounts.google.com https://securetoken.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://formsubmit.co wss://*.firebaseio.com; frame-src 'self' https://www.google.com https://nextgenrealtors-e3e3c.firebaseapp.com; frame-ancestors 'none';");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://apis.google.com https://accounts.google.com https://securetoken.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https: blob: https://firebasestorage.googleapis.com https://storage.googleapis.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://formsubmit.co wss://*.firebaseio.com; frame-src 'self' blob: https://www.google.com https://nextgenrealtors-e3e3c.firebaseapp.com https://firebasestorage.googleapis.com https://storage.googleapis.com; object-src 'self' blob:; frame-ancestors 'none';");
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
 
   if (req.method === 'OPTIONS') return res.sendStatus(200);
@@ -40,6 +91,15 @@ app.use((req, res, next) => {
 app.get('/api/health', (req, res) => {
   res.json({ status: 'NextGen Realtors Proxy is running ✅' });
 });
+
+// ---- Serve Uploaded PDFs ----
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res) => {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'self';");
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  }
+}));
 
 // ---- Serve Frontend Files ----
 app.use(express.static(__dirname));
@@ -87,7 +147,60 @@ app.get('/send-otp', async (req, res) => {
   }
 });
 
-// ---- 2. Social Media Publishing ----
+// ---- 2. PDF/Brochure Upload ----
+app.post('/api/upload-brochure', (req, res) => {
+  pdfUpload.array('brochures', MAX_BROCHURES)(req, res, (error) => {
+    if (error) {
+      removeUploadedFiles(req.files);
+      if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({
+          success: false,
+          error: 'File size exceeds 20MB limit. Please choose a smaller file.'
+        });
+      }
+      if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_COUNT') {
+        return res.status(400).json({
+          success: false,
+          error: 'A maximum of 10 brochures can be uploaded per property.'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        error: error.message || 'Unable to upload brochure.'
+      });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No files uploaded.' });
+    }
+
+    const brochures = req.files.map(brochureInfo);
+    res.json({
+      success: true,
+      brochures
+    });
+  });
+});
+
+app.delete('/api/brochures', (req, res) => {
+  const storedPath = typeof req.body.path === 'string' ? req.body.path : '';
+  const storedUrl = typeof req.body.url === 'string' ? req.body.url : '';
+  const filename = path.basename(storedPath || storedUrl);
+  const brochurePath = path.join(BROCHURE_DIR, filename);
+
+  if (!filename || path.extname(filename).toLowerCase() !== '.pdf' || path.dirname(brochurePath) !== BROCHURE_DIR) {
+    return res.status(400).json({ success: false, error: 'Invalid brochure path.' });
+  }
+
+  fs.rm(brochurePath, { force: true }, (error) => {
+    if (error) {
+      return res.status(500).json({ success: false, error: 'Failed to delete brochure.' });
+    }
+    res.json({ success: true });
+  });
+});
+
+// ---- 3. Social Media Publishing ----
 app.post('/api/publish', upload.single('media'), async (req, res) => {
   try {
     const { desc, fb, ig, yt, type } = req.body;

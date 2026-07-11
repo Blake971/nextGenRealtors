@@ -108,6 +108,49 @@ const Admin = {
   },
 };
 
+const MAX_BROCHURE_SIZE = 20 * 1024 * 1024;
+const MAX_BROCHURES_PER_PROPERTY = 10;
+let _formBrochures = [];
+let _removedBrochures = [];
+
+function normalizeBrochures(property = {}) {
+  if (Array.isArray(property.brochures)) {
+    return property.brochures
+      .filter(brochure => brochure && brochure.url)
+      .map(brochure => ({
+        url: brochure.url,
+        name: brochure.name || 'Property brochure.pdf',
+        path: brochure.path || '',
+        size: Number(brochure.size) || 0,
+        status: 'uploaded',
+        progress: 100,
+        persisted: true
+      }));
+  }
+
+  if (property.brochureUrl) {
+    return [{
+      url: property.brochureUrl,
+      name: property.brochureName || 'Property brochure.pdf',
+      path: property.brochurePath || '',
+      size: Number(property.brochureSize) || 0,
+      status: 'uploaded',
+      progress: 100,
+      persisted: true
+    }];
+  }
+
+  return [];
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size === 0) return '0 B';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 // ---- UI helpers ----
 function applyAdminUI() {
   const isAdmin = Admin.isLoggedIn();
@@ -135,9 +178,29 @@ function applyAdminUI() {
   const cpwbtn = document.getElementById('admin-cpw-btn');
   if (cpwbtn) cpwbtn.style.display = isAdmin ? 'inline-block' : 'none';
 
+  const visibilityBtn = document.getElementById('admin-visibility-btn');
+  if (visibilityBtn) visibilityBtn.style.display = isAdmin ? 'inline-block' : 'none';
+
   // Toggle Subscribers tab
   const subNav = document.getElementById('nav-subscribers');
   if (subNav) subNav.style.display = isAdmin ? 'block' : 'none';
+
+  if (typeof refreshVisibilityNavigation === 'function') {
+    refreshVisibilityNavigation(window._visibilitySettings || null).catch(() => { });
+  }
+}
+
+async function togglePropertyVisibility(type, id, currentVisible) {
+  if (!Admin.isLoggedIn()) return;
+
+  try {
+    await DB[type].update(id, { isVisible: !currentVisible });
+    showToast(currentVisible ? 'Property hidden from visitors.' : 'Property visible to visitors.', 'success');
+    if (window._currentPage) window._currentPage();
+  } catch (e) {
+    console.error('Failed to toggle property visibility:', e);
+    showToast('Failed to update card visibility.', 'error');
+  }
 }
 
 // ---- Admin Modals ----
@@ -401,6 +464,9 @@ async function showPropertyForm(type, editItem = null) {
     if (grid) editItem.images.forEach(src => addImagePreview(src, grid));
   }
 
+  _formBrochures = normalizeBrochures(editItem || {});
+  _removedBrochures = [];
+  renderBrochureUploadList();
   openModal('prop-form-modal');
 }
 
@@ -421,6 +487,13 @@ function buildFormHtml(type, d = {}, areas = []) {
       <label class="form-label">Title *</label>
       <input class="form-control" id="pf-title" placeholder="e.g. Prime Plot in Koramangala" value="${esc(d.title || '')}">
     </div>
+    <div class="form-group">
+      <label class="checkbox-group" style="align-items:center; gap:10px; margin:4px 0 2px; cursor:pointer;">
+        <input type="checkbox" id="pf-isVisible" ${d.isVisible === false ? '' : 'checked'}>
+        <span class="form-label" style="margin-bottom:0">Visible on website</span>
+      </label>
+      <small style="display:block;color:var(--mid-grey);margin-top:6px;">Uncheck to hide this card from visitors while keeping it in the admin panel.</small>
+    </div>
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">District</label>
@@ -434,6 +507,37 @@ function buildFormHtml(type, d = {}, areas = []) {
     <div class="form-group">
       <label class="form-label">Location *</label>
       <input class="form-control" id="pf-location" placeholder="e.g. Whitefield, Bangalore" value="${esc(d.location || '')}">
+    </div>`;
+
+  const brochureHtml = `
+    <div class="form-group brochure-upload">
+      <label class="form-label">Property Brochures <span class="form-label-optional">(optional, up to 10 PDFs)</span></label>
+      <div class="brochure-drop-zone" id="pf-brochure-drop-zone"
+        ondragover="handleBrochureDragOver(event)"
+        ondragleave="handleBrochureDragLeave(event)"
+        ondrop="handleBrochureDrop(event)">
+        <span class="brochure-drop-icon">📄</span>
+        <strong>Drag and drop PDF brochures here</strong>
+        <span>or</span>
+        <label class="btn btn-ghost btn-sm" for="pf-brochure-input">Choose PDFs</label>
+        <input type="file" id="pf-brochure-input" multiple accept="application/pdf"
+          onchange="handleBrochureUpload(event)" hidden>
+        <small>PDF only · Maximum 20 MB per file</small>
+      </div>
+      <div class="brochure-upload-summary">
+        <span id="pf-brochure-capacity">0 of 10 files · 0 MB total</span>
+        <span id="pf-brochure-remaining">10 files remaining</span>
+      </div>
+      <div class="brochure-overall-progress" id="pf-brochure-overall" hidden>
+        <div class="brochure-overall-progress-label">
+          <span>Overall upload progress</span>
+          <span id="pf-brochure-overall-percent">0%</span>
+        </div>
+        <div class="brochure-progress-track">
+          <span id="pf-brochure-overall-bar" style="width:0%"></span>
+        </div>
+      </div>
+      <div class="brochure-upload-list" id="pf-brochure-list" aria-live="polite"></div>
     </div>`;
 
   const getPriceAndDesc = (type, d) => `
@@ -508,7 +612,7 @@ function buildFormHtml(type, d = {}, areas = []) {
     </div>`;
 
   if (type === 'plots') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Area</label>
@@ -557,7 +661,7 @@ function buildFormHtml(type, d = {}, areas = []) {
   }
 
   if (type === 'flats') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">BHK Type *</label>
@@ -600,7 +704,7 @@ function buildFormHtml(type, d = {}, areas = []) {
   }
 
   if (type === 'apartments') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Total Acres</label>
@@ -647,7 +751,7 @@ function buildFormHtml(type, d = {}, areas = []) {
   }
 
   if (type === 'villas') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Bedrooms</label>
@@ -684,7 +788,7 @@ function buildFormHtml(type, d = {}, areas = []) {
         </select>
       </div>` + getPriceAndDesc(type, d);
   } else if (type === 'commercial') {
-    return commonTop + `
+    return commonTop + brochureHtml + `
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Super Built-up Area</label>
@@ -804,6 +908,7 @@ function collectFormData(type) {
   const base = {
     companyLogoUrl,
     title: g('pf-title'),
+    isVisible: document.getElementById('pf-isVisible') ? document.getElementById('pf-isVisible').checked : true,
     location: g('pf-location'),
     district: g('pf-district'),
     village: g('pf-village'),
@@ -817,6 +922,14 @@ function collectFormData(type) {
     legalBenefits: g('pf-legalBenefits'),
     investmentPotential: g('pf-investmentPotential'),
     videoUrl: g('pf-videoUrl'),
+    brochures: _formBrochures
+      .filter(brochure => brochure.status === 'uploaded')
+      .map(brochure => ({
+        url: brochure.url,
+        name: brochure.name,
+        path: brochure.path,
+        size: brochure.size
+      })),
     images,           // array of up to 15 base64/URL strings
     imageUrl: images[0] || '',   // keep for backward compat with card renderer
   };
@@ -865,6 +978,11 @@ function collectFormData(type) {
 async function submitPropertyForm() {
   const type = document.getElementById('prop-form-type').value;
   const editId = document.getElementById('prop-form-id').value;
+
+  if (_formBrochures.some(brochure => brochure.status === 'uploading')) {
+    showToast('Please wait for all brochure uploads to finish.', 'error');
+    return;
+  }
 
   // collectFormData needs to be handled properly. Wait, collectFormData is defined below submitPropertyForm in the original but above in my file? 
   // Let me check lines 276-304. Yes, it's defined right above it.
@@ -921,11 +1039,13 @@ async function submitPropertyForm() {
   try {
     if (editId) {
       await DB[type].update(editId, data);
+      await cleanupRemovedBrochures();
       showToast('✏️ Listing updated successfully!', 'success');
       closeModal('prop-form-modal');
       if (window._currentPage) window._currentPage();
     } else {
       const newItem = await DB[type].add(data);
+      await cleanupRemovedBrochures();
       showToast('✅ New listing added!', 'success');
       closeModal('prop-form-modal');
       promptNotifySubscribers(newItem, type); // Trigger the notification flow
@@ -1014,6 +1134,250 @@ async function handleCompanyLogoUpload(event) {
     showToast('Failed to load company logo', 'error');
   }
   event.target.value = '';
+}
+
+function handleBrochureDragOver(event) {
+  event.preventDefault();
+  event.currentTarget.classList.add('is-dragging');
+}
+
+function handleBrochureDragLeave(event) {
+  event.currentTarget.classList.remove('is-dragging');
+}
+
+function handleBrochureDrop(event) {
+  event.preventDefault();
+  event.currentTarget.classList.remove('is-dragging');
+  queueBrochureFiles(Array.from(event.dataTransfer.files || []));
+}
+
+function handleBrochureUpload(event) {
+  queueBrochureFiles(Array.from(event.target.files || []));
+  event.target.value = '';
+}
+
+async function cancelPropertyForm() {
+  const temporaryBrochures = _formBrochures.filter(brochure => !brochure.persisted);
+  _formBrochures = [];
+  _removedBrochures = [];
+  closeModal('prop-form-modal');
+
+  temporaryBrochures.forEach(brochure => brochure.request?.abort());
+  const uploadedTemporaryBrochures = temporaryBrochures.filter(brochure => brochure.url);
+  await Promise.allSettled(uploadedTemporaryBrochures.map(deleteBrochureFile));
+}
+
+function queueBrochureFiles(files) {
+  if (files.length === 0) return;
+
+  const activeCount = _formBrochures.filter(brochure => brochure.status !== 'failed').length;
+  const availableSlots = Math.max(0, MAX_BROCHURES_PER_PROPERTY - activeCount);
+  const acceptedFiles = files.slice(0, availableSlots);
+
+  if (files.length > availableSlots) {
+    showToast('A maximum of 10 brochures can be uploaded per property.', 'error');
+  }
+
+  for (const file of acceptedFiles) {
+    const id = window.crypto && typeof window.crypto.randomUUID === 'function'
+      ? window.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const isPdf = file.type === 'application/pdf' && file.name.toLowerCase().endsWith('.pdf');
+    const brochure = {
+      id,
+      name: file.name,
+      size: file.size,
+      path: '',
+      url: '',
+      status: 'uploading',
+      progress: 0,
+      persisted: false,
+      error: ''
+    };
+
+    if (!isPdf) {
+      brochure.status = 'failed';
+      brochure.error = 'Only PDF files are allowed.';
+      _formBrochures.push(brochure);
+      showToast(`"${file.name}" is not a PDF file.`, 'error');
+      continue;
+    }
+
+    if (file.size > MAX_BROCHURE_SIZE) {
+      brochure.status = 'failed';
+      brochure.error = 'File size exceeds 20MB limit. Please choose a smaller file.';
+      _formBrochures.push(brochure);
+      showToast(brochure.error, 'error');
+      continue;
+    }
+
+    _formBrochures.push(brochure);
+    uploadBrochureFile(file, brochure);
+  }
+
+  renderBrochureUploadList();
+}
+
+function uploadBrochureFile(file, brochure) {
+  const request = new XMLHttpRequest();
+  const formData = new FormData();
+  formData.append('brochures', file);
+  brochure.request = request;
+
+  request.upload.addEventListener('progress', event => {
+    if (!event.lengthComputable) return;
+    brochure.progress = Math.round((event.loaded / event.total) * 100);
+    renderBrochureUploadList();
+  });
+
+  request.addEventListener('load', () => {
+    try {
+      const result = JSON.parse(request.responseText || '{}');
+      if (request.status < 200 || request.status >= 300 || !result.success || !result.brochures?.[0]) {
+        throw new Error(result.error || 'Upload failed.');
+      }
+
+      const uploaded = result.brochures[0];
+      Object.assign(brochure, uploaded, {
+        status: 'uploaded',
+        progress: 100,
+        request: null
+      });
+      showToast(`Uploaded ${brochure.name}.`, 'success');
+    } catch (error) {
+      brochure.status = 'failed';
+      brochure.progress = 0;
+      brochure.error = error.message || 'Upload failed.';
+      brochure.request = null;
+      showToast(brochure.error, 'error');
+    }
+    renderBrochureUploadList();
+  });
+
+  request.addEventListener('error', () => {
+    brochure.status = 'failed';
+    brochure.progress = 0;
+    brochure.error = 'Upload failed. Please check your connection and try again.';
+    brochure.request = null;
+    showToast(brochure.error, 'error');
+    renderBrochureUploadList();
+  });
+
+  request.addEventListener('abort', () => {
+    brochure.status = 'failed';
+    brochure.progress = 0;
+    brochure.error = 'Upload cancelled.';
+    brochure.request = null;
+    renderBrochureUploadList();
+  });
+
+  request.open('POST', '/api/upload-brochure');
+  request.send(formData);
+}
+
+function renderBrochureUploadList() {
+  const list = document.getElementById('pf-brochure-list');
+  if (!list) return;
+
+  const active = _formBrochures.filter(brochure => brochure.status !== 'failed');
+  const activeSize = active.reduce((sum, brochure) => sum + (Number(brochure.size) || 0), 0);
+  const remaining = Math.max(0, MAX_BROCHURES_PER_PROPERTY - active.length);
+  const capacity = document.getElementById('pf-brochure-capacity');
+  const remainingLabel = document.getElementById('pf-brochure-remaining');
+  const overall = document.getElementById('pf-brochure-overall');
+  const overallBar = document.getElementById('pf-brochure-overall-bar');
+  const overallPercent = document.getElementById('pf-brochure-overall-percent');
+  const uploading = active.some(brochure => brochure.status === 'uploading');
+  const uploadBatch = active.filter(brochure => !brochure.persisted);
+  const uploadBatchSize = uploadBatch.reduce((sum, brochure) => sum + (Number(brochure.size) || 0), 0);
+  const totalWeightedBytes = uploadBatch.reduce((sum, brochure) => {
+    return sum + ((Number(brochure.size) || 0) * (Number(brochure.progress) || 0) / 100);
+  }, 0);
+  const progress = uploadBatchSize > 0 ? Math.round((totalWeightedBytes / uploadBatchSize) * 100) : 0;
+
+  if (capacity) capacity.textContent = `${active.length} of 10 files · ${formatFileSize(activeSize)} total`;
+  if (remainingLabel) {
+    remainingLabel.textContent = `${remaining} file${remaining === 1 ? '' : 's'} · ${formatFileSize(remaining * MAX_BROCHURE_SIZE)} max remaining`;
+  }
+  if (overall) overall.hidden = !uploading;
+  if (overallBar) overallBar.style.width = `${progress}%`;
+  if (overallPercent) overallPercent.textContent = `${progress}%`;
+
+  if (_formBrochures.length === 0) {
+    list.innerHTML = '<p class="brochure-empty">No brochures uploaded yet.</p>';
+    return;
+  }
+
+  list.innerHTML = _formBrochures.map((brochure, index) => {
+    const progressValue = Number(brochure.progress) || 0;
+    const statusText = brochure.status === 'uploaded'
+      ? 'Uploaded ✓'
+      : brochure.status === 'failed'
+        ? `Failed ✗${brochure.error ? ` · ${esc(brochure.error)}` : ''}`
+        : `Uploading ${progressValue}%`;
+    return `
+      <div class="brochure-upload-item brochure-status-${brochure.status}">
+        <div class="brochure-upload-file">
+          <span class="brochure-file-icon">PDF</span>
+          <div>
+            <strong title="${esc(brochure.name)}">${esc(brochure.name)}</strong>
+            <span>${formatFileSize(brochure.size)} · ${statusText}</span>
+          </div>
+        </div>
+        ${brochure.status === 'uploading' ? `
+          <div class="brochure-progress-track">
+            <span style="width:${progressValue}%"></span>
+          </div>` : ''}
+        <button type="button" class="brochure-remove-btn" onclick="removeBrochure(${index})"
+          aria-label="Remove ${esc(brochure.name)}">Delete</button>
+      </div>`;
+  }).join('');
+}
+
+async function removeBrochure(index) {
+  const brochure = _formBrochures[index];
+  if (!brochure) return;
+
+  if (brochure.status === 'uploading' && brochure.request) {
+    brochure.request.abort();
+  }
+
+  _formBrochures.splice(index, 1);
+  if (brochure.persisted) {
+    _removedBrochures.push(brochure);
+  } else if (brochure.url) {
+    try {
+      await deleteBrochureFile(brochure);
+    } catch (error) {
+      showToast(error.message || 'Failed to delete brochure.', 'error');
+    }
+  }
+  renderBrochureUploadList();
+}
+
+async function deleteBrochureFile(brochure) {
+  const isLocalUpload = String(brochure.url || '').startsWith('/uploads/brochures/')
+    || String(brochure.path || '').startsWith('uploads/brochures/');
+  if (!isLocalUpload) return;
+
+  const response = await fetch('/api/brochures', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: brochure.path, url: brochure.url })
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || 'Failed to delete brochure.');
+  }
+}
+
+async function cleanupRemovedBrochures() {
+  const removed = [..._removedBrochures];
+  _removedBrochures = [];
+  const results = await Promise.allSettled(removed.map(deleteBrochureFile));
+  if (results.some(result => result.status === 'rejected')) {
+    showToast('Listing saved, but one removed brochure could not be deleted from storage.', 'error');
+  }
 }
 
 function addImagePreview(src, grid) {
@@ -1505,3 +1869,117 @@ window.publishMarketingPost = async function() {
     btn.innerHTML = '🚀 Publish to Socials';
   }
 };
+
+/* =========================================================
+   SECTION VISIBILITY MANAGER
+   Stores visibility settings in Firestore (settings collection,
+   type: 'section_visibility').
+   ========================================================= */
+
+const _VISIBILITY_CATEGORIES = [
+  { key: 'plots',       label: 'Plots',       icon: '🌿' },
+  { key: 'villas',      label: 'Villas',      icon: '🏡' },
+  { key: 'flats',       label: 'Flats',       icon: '🏢' },
+  { key: 'apartments',  label: 'Apartments',  icon: '🏢' },
+  { key: 'commercial',  label: 'Commercial',  icon: '🏙️' },
+];
+
+const _VISIBILITY_ONDEMAND = [
+  { key: 'od_apartments', label: 'Apartments on Demand', icon: '🏢' },
+  { key: 'od_plots',      label: 'Plots on Demand',      icon: '🌿' },
+  { key: 'od_villas',     label: 'Villas on Demand',     icon: '🏡' },
+];
+
+/**
+ * Fetch the current visibility settings doc from Firestore.
+ * Returns an object like { plots: true, villas: false, od_plots: true, ... }
+ * Defaults to true (visible) for all keys if no doc exists.
+ */
+async function getVisibilitySettings() {
+  try {
+    const allSettings = await DB.settings.get();
+    const doc = allSettings.find(s => s.type === 'section_visibility');
+    if (doc) return doc;
+  } catch (e) {
+    console.error('Failed to load visibility settings:', e);
+  }
+  // Default: everything visible
+  const defaults = { type: 'section_visibility' };
+  [..._VISIBILITY_CATEGORIES, ..._VISIBILITY_ONDEMAND].forEach(item => {
+    defaults[item.key] = true;
+  });
+  return defaults;
+}
+
+/** Build a toggle row HTML for the visibility modal */
+function _buildToggleRow(item, settings) {
+  const checked = settings[item.key] !== false; // default to true
+  return `
+  <div class="vis-toggle-row">
+    <div class="vis-toggle-label">
+      <span class="vis-icon">${item.icon}</span>
+      <span>${item.label}</span>
+    </div>
+    <label class="vis-switch">
+      <input type="checkbox" id="vis-chk-${item.key}" ${checked ? 'checked' : ''}>
+      <span class="vis-switch-track"></span>
+    </label>
+  </div>`;
+}
+
+/** Open the Section Visibility Manager modal */
+async function openVisibilityModal() {
+  closeModal('admin-logout-modal');
+
+  const catContainer   = document.getElementById('vis-categories');
+  const odContainer    = document.getElementById('vis-ondemand');
+  if (!catContainer || !odContainer) return;
+
+  catContainer.innerHTML = '<div style="padding:12px;text-align:center;color:var(--mid-grey)">Loading...</div>';
+  odContainer.innerHTML  = '';
+  openModal('visibility-modal');
+
+  const settings = await getVisibilitySettings();
+  window._visibilityDocId = settings.id || null;
+
+  catContainer.innerHTML = _VISIBILITY_CATEGORIES.map(item => _buildToggleRow(item, settings)).join('');
+  odContainer.innerHTML  = _VISIBILITY_ONDEMAND.map(item => _buildToggleRow(item, settings)).join('');
+}
+
+/** Save the current toggle state back to Firestore */
+async function saveVisibilitySettings() {
+  if (!Admin.isLoggedIn()) return;
+
+  const btn = document.getElementById('vis-save-btn');
+  if (btn) btn.disabled = true;
+
+  const allKeys = [..._VISIBILITY_CATEGORIES, ..._VISIBILITY_ONDEMAND];
+  const updates = { type: 'section_visibility' };
+  allKeys.forEach(item => {
+    const chk = document.getElementById(`vis-chk-${item.key}`);
+    updates[item.key] = chk ? chk.checked : true;
+  });
+
+  try {
+    if (window._visibilityDocId) {
+      await DB.settings.update(window._visibilityDocId, updates);
+    } else {
+      const added = await DB.settings.add(updates);
+      window._visibilityDocId = added.id;
+    }
+    // Invalidate cache so next home-page render picks up changes
+    clearCache('settings');
+    window._visibilitySettings = updates;
+    if (typeof refreshVisibilityNavigation === 'function') {
+      await refreshVisibilityNavigation(updates);
+    }
+    showToast('✅ Visibility settings saved!', 'success');
+    closeModal('visibility-modal');
+    if (window._currentPage) window._currentPage();
+  } catch (e) {
+    console.error('Failed to save visibility settings:', e);
+    showToast('Failed to save settings.', 'error');
+  }
+
+  if (btn) btn.disabled = false;
+}
