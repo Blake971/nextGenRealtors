@@ -21,10 +21,3 @@ Thumbs.db
 # Build output (if added later)
 dist/
 build/
-
-# Server logs
-server.log
-*.log
-
-# User uploads (PDFs, images, etc.)
-uploads/

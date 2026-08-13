@@ -7,7 +7,7 @@
   <meta name="description"
     content="NextGen Realtors™ – Trusted real estate agent in Hyderabad. Browse plots, flats, and villas for sale. Contact us today!">
   <title>NextGen Realtors™ | Premium Properties in Hyderabad</title>
-  <link rel="stylesheet" href="css/style.css?v=33">
+  <link rel="stylesheet" href="css/style.css?v=34">
   <!-- Translations -->
   <script src="js/i18n/en.js?v=38"></script>
   <script src="js/i18n/te.js?v=38"></script>
@@ -186,7 +186,7 @@
         <p style="color:var(--mid-grey);font-size:0.9rem">You will no longer be able to add or edit listings until you
           log in again.</p>
       </div>
-      <div class="modal-footer" style="flex-wrap:wrap; gap:8px;">
+      <div class="modal-footer">
         <button class="btn btn-outline" onclick="closeModal('admin-logout-modal')">Cancel</button>
         <button class="btn btn-danger" onclick="confirmLogout()">🔒 Yes, Logout</button>
       </div>
@@ -454,33 +454,6 @@
     </div>
   </div>
 
-  <!-- ====== SECTION VISIBILITY MODAL ====== -->
-  <div class="modal-overlay" id="visibility-modal">
-    <div class="modal admin-modal" style="max-width:480px">
-      <div class="modal-header">
-        <h3>🙈 Section Visibility</h3>
-        <button class="modal-close" onclick="closeModal('visibility-modal')">✕</button>
-      </div>
-      <div class="modal-body" style="padding:24px">
-        <p style="color:var(--mid-grey);font-size:0.9rem;margin-bottom:20px;">Toggle which sections appear on the Home page for visitors. Admin can always see everything.</p>
-
-        <div class="vis-section-label">Category Cards</div>
-        <div class="vis-toggle-list" id="vis-categories">
-          <!-- Rendered by JS -->
-        </div>
-
-        <div class="vis-section-label" style="margin-top:20px;">"On Demand" Featured Sections</div>
-        <div class="vis-toggle-list" id="vis-ondemand">
-          <!-- Rendered by JS -->
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-outline" onclick="closeModal('visibility-modal')">Close</button>
-        <button class="btn btn-primary" id="vis-save-btn" onclick="saveVisibilitySettings()">💾 Save Changes</button>
-      </div>
-    </div>
-  </div>
-
   <!-- ====== WHATSAPP FAB ====== -->
   <a href="https://wa.me/917569844192?text=Hi%20NextGen%20Realtors." id="whatsapp-fab" class="whatsapp-fab" target="_blank" rel="noopener" title="Chat with us on WhatsApp">
     <svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor">
@@ -491,7 +464,6 @@
   <!-- ====== SCRIPTS ====== -->
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-storage.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
 
   <script src="js/data.js?v=38"></script>

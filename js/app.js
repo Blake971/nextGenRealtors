@@ -4,6 +4,64 @@
 
 window._viewMode = 'grid'; // Always default to grid on load
 
+window.formatFileSize = window.formatFileSize || function(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+window.normalizeBrochures = window.normalizeBrochures || function(value) {
+  if (!value) return [];
+  const raw = Array.isArray(value) ? value : [value];
+  return raw
+    .map(item => {
+      if (!item) return null;
+      if (typeof item === 'string') {
+        return { url: item, name: 'Brochure PDF', path: '', size: 0, status: 'uploaded', progress: 100 };
+      }
+      return {
+        url: item.url || item.fileUrl || item.brochureUrl || '',
+        name: item.name || item.originalName || item.filename || item.brochureName || 'Brochure PDF',
+        path: item.path || item.filePath || item.brochurePath || '',
+        size: Number(item.size || item.fileSize || 0),
+        status: item.status || 'uploaded',
+        progress: Number(item.progress || (item.status === 'uploading' ? 0 : 100)),
+      };
+    })
+    .filter(item => item && item.url);
+};
+
+window.togglePropertyVisibility = async function(type, id) {
+  if (!Admin.isLoggedIn()) {
+    showToast('Please login as admin first.', 'error');
+    return;
+  }
+
+  try {
+    const items = await DB[type].get();
+    const item = items.find(entry => entry.id === id);
+    if (!item) return;
+
+    const nextState = item.isVisible === false;
+    await DB[type].update(id, { isVisible: nextState });
+    showToast(nextState ? 'Property is now visible.' : 'Property is now hidden.', 'success');
+    if (typeof window._currentPage === 'function') window._currentPage();
+  } catch (error) {
+    console.error(error);
+    showToast('Failed to update property visibility.', 'error');
+  }
+};
+
+function isPropertyVisibleToVisitor(item) {
+  return item && item.isVisible !== false;
+}
+
+function normalizeListingItems(items) {
+  const isAdmin = Admin.isLoggedIn();
+  return isAdmin ? items : items.filter(isPropertyVisibleToVisitor);
+}
+
 function toggleViewMode(type) {
   window._viewMode = window._viewMode === 'grid' ? 'table' : 'grid';
   localStorage.setItem('re_viewMode', window._viewMode);
@@ -21,9 +79,6 @@ function toggleViewMode(type) {
 // ---- Modal helpers ----
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-function syncAdminUI() {
-  if (typeof applyAdminUI === 'function') applyAdminUI();
-}
 
 // Close modal on overlay click
 document.addEventListener('click', e => {
@@ -146,19 +201,19 @@ function imgOrIcon(url, icon = '🏠') {
 
 // ---- Property Card ----
 function renderPropertyCard(item, type) {
-  const isAdmin = Admin.isLoggedIn();
-  const visible = item.isVisible !== false;
-  if (!visible && !isAdmin) return '';
-
   const icon = type === 'plots' ? '🌿' : type === 'flats' ? '🏢' : type === 'apartments' ? '🏢' : type === 'villas' ? '🏡' : '🏙️';
   const specsHtml = buildCardSpecs(item, type);
+  const isHidden = Admin.isLoggedIn() && item.isVisible === false;
+  const visibilityToggle = Admin.isLoggedIn() && type === 'plots'
+    ? `<button class="btn-icon btn-visibility" title="${item.isVisible === false ? 'Show on website' : 'Hide from website'}" onclick="event.stopPropagation(); togglePropertyVisibility('${type}','${item.id}')">${item.isVisible === false ? '<span class="eye-icon-hidden"><span class="eye-icon">👁</span><span class="eye-cross"></span></span>' : '<span class="eye-icon-visible"><span class="eye-icon">👁</span></span>'}</button>`
+    : '';
 
   return `
-  <div class="property-card fade-up${visible ? '' : ' property-card-hidden'}" data-id="${item.id}">
+  <div class="property-card fade-up" data-id="${item.id}">
     <div class="card-image-wrap">
       ${imgOrIcon(item.imageUrl, icon)}
+      ${isHidden ? '<span class="card-badge card-badge-hidden">Hidden</span>' : ''}
       <div class="card-price-tag">${type === 'plots' ? esc(item.price) + ' <span style="font-size:0.75rem;opacity:0.9;font-weight:500;">/ Sq Yd</span>' : esc(item.price)}</div>
-      ${!visible ? `<div class="card-hidden-chip">Hidden from visitors</div>` : ''}
     </div>
     <div class="card-body">
       <h3 class="card-title">${esc(item.title)}</h3>
@@ -171,7 +226,7 @@ function renderPropertyCard(item, type) {
       <div class="card-footer">
         <button class="btn btn-primary btn-sm" onclick="viewDetailOrAuth('${type}','${item.id}')">${t('btn_view_details')}</button>
         <div class="card-admin-actions">
-          <button class="btn-icon btn-visibility-toggle" title="${visible ? 'Hide from visitors' : 'Show to visitors'}" onclick="togglePropertyVisibility('${type}','${item.id}', ${visible})">${visible ? '🙈' : '👁️'}</button>
+          ${visibilityToggle}
           <button class="btn-icon btn-edit" title="Edit" onclick="editProperty('${type}','${item.id}')">✏️</button>
           <button class="btn-icon btn-del"  title="Delete" onclick="deleteProperty('${type}','${item.id}')">🗑️</button>
         </div>
@@ -180,31 +235,40 @@ function renderPropertyCard(item, type) {
   </div>`;
 }
 
-async function refreshVisibilityNavigation(settings = null) {
-  const visSettings = settings || window._visibilitySettings || (typeof getVisibilitySettings === 'function' ? await getVisibilitySettings() : null);
-  if (!visSettings) return;
-
-  window._visibilitySettings = visSettings;
-  const isAdmin = Admin.isLoggedIn();
-  const pages = ['plots', 'flats', 'apartments', 'villas', 'commercial'];
-
-  pages.forEach(page => {
-    document.querySelectorAll(`.nav-links a[data-page="${page}"]`).forEach(link => {
-      const item = link.closest('li');
-      if (!item) return;
-
-      const visible = visSettings[page] !== false;
-      item.style.display = visible || isAdmin ? '' : 'none';
-      link.title = visible ? '' : 'Hidden from visitors';
-      link.style.opacity = visible || !isAdmin ? '' : '0.65';
-      link.style.fontStyle = visible || !isAdmin ? '' : 'italic';
-    });
-  });
-}
-
 function buildCardSpecs(item, type) {
   const tag = (icon, val) => val ? `<span class="spec-tag">${icon} ${esc(val)}</span>` : '';
-  if (type === 'plots') return tag('📍', [item.village, item.district].filter(Boolean).join(', ')) + (item.lpNumber ? tag('📝', 'LP: ' + item.lpNumber) : '') + tag('✅', item.approvedBy) + (item.reraApproved === 'Yes' ? tag('🏛️', 'RERA Approved') : '');
+  if (type === 'plots') {
+    let specs = tag('📍', [item.village, item.district].filter(Boolean).join(', ')) + (item.lpNumber ? tag('📝', 'LP: ' + item.lpNumber) : '') + tag('✅', item.approvedBy) + (item.reraApproved === 'Yes' ? tag('🏛️', 'RERA Approved') : '');
+    if (item.amenities && Array.isArray(item.amenities) && item.amenities.length > 0) {
+      const amenityIcons = {
+        'Spa': '🧖',
+        'Fitness Centre / Gym': '💪',
+        'Swimming Pool': '🏊',
+        'Club House': '🏠',
+        'Fire Alarm': '🔥',
+        'Wifi': '📶',
+        'Maintenance Staff': '👷',
+        'Water Storage': '💧',
+        'Water Disposal': '🚰',
+        'Rain Water Harvesting': '🌧️',
+        'Garden': '🌿',
+        'Security': '🔒',
+        'Lift(s)': '🛗',
+        'Kids Area': '🎠',
+        'Intercom': '📞'
+      };
+      const amenityTags = item.amenities.slice(0, 4).map(a => {
+        const icon = amenityIcons[a] || '✨';
+        return `<span class="spec-tag">${icon}</span>`;
+      }).join('');
+      if (item.amenities.length > 4) {
+        specs += amenityTags + `<span class="spec-tag">+${item.amenities.length - 4}</span>`;
+      } else {
+        specs += amenityTags;
+      }
+    }
+    return specs;
+  }
   if (type === 'flats') return tag('📍', [item.village, item.district].filter(Boolean).join(', ')) + tag('🛏️', item.bhk) + tag('📐', item.area) + tag('🎨', item.furnishing);
   if (type === 'apartments') return tag('📍', [item.village, item.district].filter(Boolean).join(', ')) + tag('🏢', (item.blocks ? item.blocks + ' Blocks' : '')) + tag('📏', item.flatSizes) + tag('🏠', (item.totalUnits ? item.totalUnits + ' Units' : ''));
   if (type === 'villas') return tag('📍', [item.village, item.district].filter(Boolean).join(', ')) + tag('🛏️', item.bedrooms) + tag('🌳', item.landArea) + (item.hasPool ? `<span class="spec-tag">🏊 Pool</span>` : '') + (item.hasGarden ? `<span class="spec-tag">🌿 Garden</span>` : '');
@@ -248,6 +312,11 @@ async function renderDetail(type, id) {
     return;
   }
 
+  if (item.isVisible === false && !Admin.isLoggedIn()) {
+    content.innerHTML = `<div class="container section" style="text-align:center"><h2>Property not available</h2><p style="color:var(--mid-grey)">This listing is currently hidden from the website.</p><button class="btn btn-primary" onclick="navigate('${type}')">Back to Listings</button></div>`;
+    return;
+  }
+
   if (window.I18n && I18n.currentLanguage !== 'en') {
     if (item.title) item.title = await I18n.translateDynamic(item.title);
     if (item.description) item.description = await I18n.translateDynamic(item.description);
@@ -282,24 +351,6 @@ async function renderDetail(type, id) {
        </div>`
     : `<div class="detail-placeholder-icon">${icon}</div>`;
 
-  const brochureHtml = item.brochureUrl
-    ? `<div class="brochure-panel">
-        <div class="brochure-panel-header">
-          <div>
-            <p class="brochure-label">Brochure</p>
-            <h3 class="brochure-title">${esc(item.brochureName || 'Property Brochure')}</h3>
-          </div>
-          <div class="brochure-actions">
-            <a href="${esc(item.brochureUrl)}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Open PDF</a>
-            <a href="${esc(item.brochureUrl)}" target="_blank" rel="noopener" download="${esc(item.brochureName || 'brochure.pdf')}" class="btn btn-primary btn-sm">Download</a>
-          </div>
-        </div>
-        <div class="brochure-viewer-shell">
-          <iframe src="${esc(item.brochureUrl)}#toolbar=0&navpanes=0&scrollbar=0" title="Property brochure PDF" class="brochure-viewer-frame"></iframe>
-        </div>
-      </div>`
-    : '';
-
   const videoHtml = item.videoUrl
     ? `<div style="margin-top:16px;font-size:0.9rem;color:var(--navy);display:flex;align-items:center;gap:8px;">
         🎬 Property Video: 
@@ -308,6 +359,38 @@ async function renderDetail(type, id) {
         </a>
        </div>`
     : `<div style="margin-top:16px;font-size:0.9rem;color:var(--mid-grey)">🎬 Video Tour: N/A</div>`;
+
+  const brochures = window.normalizeBrochures ? window.normalizeBrochures(item.brochures || item.brochure || (item.brochureUrl ? [{
+    url: item.brochureUrl,
+    name: item.brochureName || 'Brochure PDF',
+    path: item.brochurePath || '',
+    size: item.brochureSize || 0,
+  }] : [])) : [];
+
+  const brochureHtml = brochures.length > 0
+    ? `<div class="detail-brochure-section" style="margin-top: 32px; padding: 20px; background: var(--off-white); border-radius: 12px;">
+        <h3 class="detail-brochure-title" style="margin-bottom: 16px; font-family: 'Playfair Display', serif; color: var(--navy); font-size: 1.4rem;">Brochures / PDFs</h3>
+        <div class="detail-pdf-list" style="display: flex; flex-direction: column; gap: 12px;">
+          ${brochures.map((brochure, index) => {
+            const url = esc(brochure.url);
+            const name = esc(brochure.name || `Brochure ${index + 1}`);
+            return `
+              <div class="detail-pdf-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: white; border-radius: 8px; border: 1px solid var(--light-grey);">
+                <div class="detail-pdf-info" style="display: flex; align-items: center; gap: 12px;">
+                  <span style="font-size: 1.5rem;">📄</span>
+                  <div>
+                    <div class="detail-pdf-name" style="font-weight: 500; color: var(--navy);">${name}</div>
+                    <div class="detail-pdf-meta" style="font-size: 0.85rem; color: var(--mid-grey);">${brochure.size ? formatFileSize(brochure.size) : 'PDF'}</div>
+                  </div>
+                </div>
+                <div class="detail-pdf-actions">
+                  <a class="btn btn-outline btn-sm" href="${url}" download style="font-size: 0.85rem; padding: 6px 12px;">Download</a>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>`
+    : '';
 
   const mapsHtml = item.mapUrl
     ? `<a href="${esc(item.mapUrl)}" target="_blank" rel="noopener"
@@ -332,7 +415,7 @@ async function renderDetail(type, id) {
     : '';
 
   // Similar Properties Section
-  const similarItems = (Admin.isLoggedIn() ? items : items.filter(i => i.isVisible !== false))
+  const similarItems = items
     .filter(i => String(i.id) !== String(id))
     .sort(() => 0.5 - Math.random()) // Shuffle for variety
     .slice(0, 3);
@@ -343,7 +426,7 @@ async function renderDetail(type, id) {
     <div class="similar-properties-section" style="margin-top: 80px; padding-top: 60px; border-top: 2px solid var(--off-white);">
       <h2 style="text-align: center; margin-bottom: 40px; font-family: 'Playfair Display', serif; color: var(--navy); font-size: 2.2rem;">Similar ${type.charAt(0).toUpperCase() + type.slice(1)}</h2>
       <div class="properties-grid">
-        ${similarItems.map(i => renderPropertyCard(i, type)).filter(Boolean).join('')}
+        ${similarItems.map(i => renderPropertyCard(i, type)).join('')}
       </div>
     </div>`;
   }
@@ -364,6 +447,7 @@ async function renderDetail(type, id) {
         <div class="detail-left-col">
           ${galleryHtml}
           ${brochureHtml}
+          ${buildAmenitiesSpec(item, type) ? `<div class="detail-specs-grid" style="margin-top: 24px;">${buildAmenitiesSpec(item, type)}</div>` : ''}
         </div>
         <div class="detail-right-col">
           ${companyLogoHtml}
@@ -568,18 +652,87 @@ function buildDetailSpecs(item, type) {
     return `<div class="detail-spec"><div class="detail-spec-label">${label}</div><div class="detail-spec-value">${displayVal}</div></div>`;
   };
 
-  if (type === 'plots') return spec('District', item.district) + spec('Village', item.village)
-    + spec('Area', item.area) + spec('Facing', item.facing)
-    + spec('Approved By', item.approvedBy)
-    + spec('LP Number', item.lpNumber)
-    + spec('RERA Approved', item.reraApproved)
-    + spec('Contact', item.contactNumber)
-    + spec('Price per Sq Yard', item.price)
-    + spec('Type', 'Open Plot');
-  if (type === 'flats') return spec('District', item.district) + spec('Village', item.village) + spec('BHK', item.bhk) + spec('Area', item.area) + spec('Floor', item.floor) + spec('Furnishing', item.furnishing) + spec('Amenities', item.amenities) + spec('Price', item.price);
-  if (type === 'apartments') return spec('District', item.district) + spec('Village', item.village) + spec('Total Acres', item.acres) + spec('Blocks', item.blocks) + spec('Floors', item.floors) + spec('Flat Sizes', item.flatSizes) + spec('Total Units', item.totalUnits) + spec('Club House', item.clubHouseSize) + spec('Amenities', item.amenities) + spec('Price', item.price);
+  if (type === 'plots') {
+    let amenitiesHtml = '';
+    if (item.amenities && Array.isArray(item.amenities) && item.amenities.length > 0) {
+      const amenityIcons = {
+        'Spa': '🧖',
+        'Fitness Centre / Gym': '💪',
+        'Swimming Pool': '🏊',
+        'Club House': '🏠',
+        'Fire Alarm': '🔥',
+        'Wifi': '📶',
+        'Maintenance Staff': '👷',
+        'Water Storage': '💧',
+        'Water Disposal': '🚰',
+        'Rain Water Harvesting': '🌧️',
+        'Garden': '🌿',
+        'Security': '🔒',
+        'Lift(s)': '🛗',
+        'Kids Area': '🎠',
+        'Intercom': '📞'
+      };
+      amenitiesHtml = item.amenities.map(a => {
+        const icon = amenityIcons[a] || '✨';
+        return `<span style="display:inline-block;margin:4px 8px 4px 0;font-size:1.1rem;">${icon} ${esc(a)}</span>`;
+      }).join('');
+    }
+    return spec('District', item.district) + spec('Village', item.village)
+      + spec('Area', item.area) + spec('Facing', item.facing)
+      + spec('Approved By', item.approvedBy)
+      + spec('LP Number', item.lpNumber)
+      + spec('RERA Approved', item.reraApproved)
+      + spec('Contact', item.contactNumber)
+      + spec('Price per Sq Yard', item.price)
+      + spec('Type', 'Open Plot');
+  }
+  if (type === 'flats') return spec('District', item.district) + spec('Village', item.village) + spec('BHK', item.bhk) + spec('Area', item.area) + spec('Floor', item.floor) + spec('Furnishing', item.furnishing) + spec('Price', item.price);
+  if (type === 'apartments') return spec('District', item.district) + spec('Village', item.village) + spec('Total Acres', item.acres) + spec('Blocks', item.blocks) + spec('Floors', item.floors) + spec('Flat Sizes', item.flatSizes) + spec('Total Units', item.totalUnits) + spec('Club House', item.clubHouseSize) + spec('Price', item.price);
   if (type === 'villas') return spec('District', item.district) + spec('Village', item.village) + spec('Bedrooms', item.bedrooms) + spec('Land Area', item.landArea) + spec('Built-up Area', item.builtUpArea) + spec('Pool', item.hasPool ? '✅ Yes' : '❌ No') + spec('Garden', item.hasGarden ? '✅ Yes' : '❌ No') + spec('Price', item.price);
   if (type === 'commercial') return spec('District', item.district) + spec('Village', item.village) + spec('Super Built-up Area', item.area) + spec('Floor', item.floor) + spec('Washrooms', item.washrooms) + spec('Parking', item.parking) + spec('Furnishing', item.furnishing) + spec('Price', item.price);
+  return '';
+}
+
+function buildAmenitiesSpec(item, type) {
+  const spec = (label, val) => {
+    const displayVal = (val !== undefined && val !== null && val !== '') ? esc(String(val)) : '<span style="color:var(--mid-grey)">N/A</span>';
+    return `<div class="detail-spec"><div class="detail-spec-label">${label}</div><div class="detail-spec-value">${displayVal}</div></div>`;
+  };
+
+  // Handle plots with icon formatting
+  if (type === 'plots' && item.amenities && Array.isArray(item.amenities) && item.amenities.length > 0) {
+    const amenityIcons = {
+      'Spa': '🧖',
+      'Fitness Centre / Gym': '💪',
+      'Swimming Pool': '🏊',
+      'Club House': '🏠',
+      'Fire Alarm': '🔥',
+      'Wifi': '📶',
+      'Maintenance Staff': '👷',
+      'Water Storage': '💧',
+      'Water Disposal': '🚰',
+      'Rain Water Harvesting': '🌧️',
+      'Garden': '🌿',
+      'Security': '🔒',
+      'Lift(s)': '🛗',
+      'Kids Area': '🎠',
+      'Intercom': '📞'
+    };
+    const amenitiesHtml = item.amenities.map(a => {
+      const icon = amenityIcons[a] || '✨';
+      return `<span style="display:inline-block;margin:4px 8px 4px 0;font-size:1.1rem;">${icon} ${esc(a)}</span>`;
+    }).join('');
+    return `<div class="detail-spec"><div class="detail-spec-label">Amenities</div><div class="detail-spec-value" style="flex-wrap:wrap">${amenitiesHtml}</div></div>`;
+  }
+
+  // Handle flats and apartments with simple text
+  if (type === 'flats' && item.amenities) return spec('Amenities', item.amenities);
+  if (type === 'apartments' && item.amenities) return spec('Amenities', item.amenities);
+  
+  // Handle villas and commercial
+  if (type === 'villas' && item.amenities) return spec('Amenities', item.amenities);
+  if (type === 'commercial' && item.amenities) return spec('Amenities', item.amenities);
+  
   return '';
 }
 
@@ -611,7 +764,7 @@ async function confirmDelete() {
       await DB[type].del(id);
       showToast('Listing deleted.', 'success');
       if (window._currentPage) window._currentPage();
-      syncAdminUI();
+      applyAdminUI();
     } else if (kind === 'review') {
       const review = (window._reviewsList || []).find(r => r.id === id);
       const currentUser = Auth.currentUser();
@@ -622,7 +775,7 @@ async function confirmDelete() {
         await DB.reviews.del(id);
         showToast('Review deleted.', 'success');
         renderReviews();
-        syncAdminUI();
+        applyAdminUI();
       } else {
         showToast('You are not authorized to delete this review.', 'error');
       }
@@ -690,8 +843,7 @@ function loadPage(path) {
 
   window._currentPage = () => pages[page](params);
   pages[page](params);
-  syncAdminUI(); // syncAdminUI handles FAB visibility based on current hash
-  refreshVisibilityNavigation().catch(() => { });
+  applyAdminUI(); // applyAdminUI handles FAB visibility based on current hash
 }
 
 // ---- Page Renderers ----
@@ -701,40 +853,73 @@ async function renderHome() {
   content.innerHTML = '<div style="padding:100px;text-align:center"><div class="loading-spinner"></div></div>';
 
   let allPlots = [], allApartments = [], allVillas = [], clientsData = [];
-  let visSettings = {};
   try {
     const results = await Promise.all([
       DB.plots.get(),
       DB.apartments.get(),
       DB.villas.get(),
-      DB.clients.get(),
-      getVisibilitySettings()
+      DB.clients.get()
     ]);
     
     allPlots = results[0];
     allApartments = results[1];
     allVillas = results[2];
     clientsData = results[3];
-    visSettings = results[4];
-    window._visibilitySettings = visSettings;
   } catch (e) {
     console.error('Data fetch failed', e);
   }
 
   const isAdmin = Admin.isLoggedIn();
-  refreshVisibilityNavigation(visSettings).catch(() => { });
+  const visiblePlots = normalizeListingItems(allPlots);
+  const visibleApartments = normalizeListingItems(allApartments);
+  const visibleVillas = normalizeListingItems(allVillas);
 
-  // Helper: wrap section HTML — hides from visitors, shows admin badge overlay when hidden
-  function _visWrap(key, html) {
-    return html;
-  }
+  const onDemandPlots = (isAdmin ? allPlots : visiblePlots).filter(p => p.projectOnDemand === 'Yes').slice(0, 3);
+  const onDemandApartments = (isAdmin ? allApartments : visibleApartments).filter(p => p.projectOnDemand === 'Yes').slice(0, 3);
+  const onDemandVillas = (isAdmin ? allVillas : visibleVillas).filter(p => p.projectOnDemand === 'Yes').slice(0, 3);
 
-  const onDemandPlots = allPlots.filter(p => p.projectOnDemand === 'Yes').slice(0, 3);
-  const onDemandApartments = allApartments.filter(p => p.projectOnDemand === 'Yes').slice(0, 3);
-  const onDemandVillas = allVillas.filter(p => p.projectOnDemand === 'Yes').slice(0, 3);
-  const visibleOnDemandPlots = isAdmin ? onDemandPlots : onDemandPlots.filter(p => p.isVisible !== false);
-  const visibleOnDemandApartments = isAdmin ? onDemandApartments : onDemandApartments.filter(p => p.isVisible !== false);
-  const visibleOnDemandVillas = isAdmin ? onDemandVillas : onDemandVillas.filter(p => p.isVisible !== false);
+  const featuredSection = (title, description, icon, items, emptyMessage, linkTarget) => {
+    const emptyState = `<div style="grid-column: 1 / -1; background: var(--white); border: 2px dashed rgba(243, 119, 33, 0.15); border-radius: var(--radius-md); padding: 40px 24px; text-align: center; color: var(--text-dark); box-shadow: var(--shadow-sm);">
+        <div style="font-size: 2.2rem; margin-bottom: 12px;">${icon}</div>
+        <p style="font-weight: 600; font-size: 1rem; margin-bottom: 16px; color: var(--navy);">${emptyMessage}</p>
+        <a href="#contact" class="btn btn-primary btn-sm" onclick="navigate('contact')">📩 Enquire for Off-Market Deals</a>
+      </div>`;
+
+    return `
+      <section class="section" style="background:var(--white);">
+        <div class="container">
+          <div class="section-header mb-32">
+            <p class="hero-eyebrow text-gold">FEATURED</p>
+            <h2 class="text-navy">${title}</h2>
+            <p>${description}</p>
+          </div>
+          <div class="properties-grid" style="text-align:left;">
+            ${items.length > 0
+              ? items.map(p => renderPropertyCard(p, linkTarget)).join('')
+              : emptyState}
+          </div>
+        </div>
+      </section>`;
+  };
+
+  const categoryCards = [
+    { key: 'plots', title: 'Plots', image: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?q=80&w=1200&auto=format&fit=crop' },
+    { key: 'villas', title: 'Villas', image: 'https://images.unsplash.com/photo-1613490493576-7fde63acd811?q=80&w=1200&auto=format&fit=crop' },
+    { key: 'commercial', title: 'Commercial', image: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=1200&auto=format&fit=crop' },
+    { key: 'apartments', title: 'Apartments', image: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?q=80&w=1200&auto=format&fit=crop' },
+  ];
+
+  const categoryCardsHtml = categoryCards
+    .map((card, index) => {
+      return `
+        <div class="cat-card fade-up${index ? ` fade-up-delay-${Math.min(index, 3)}` : ''}" onclick="navigate('${card.key}')" style="background-image: url('${card.image}')">
+          <div class="cat-card-overlay"></div>
+          <div class="cat-card-content">
+            <h3>${card.title}</h3>
+            <span class="cat-card-link">View Listings →</span>
+          </div>
+        </div>`;
+    }).join('');
 
   // Parallelize dynamic translations for better performance
   if (window.I18n && I18n.currentLanguage !== 'en') {
@@ -758,53 +943,9 @@ async function renderHome() {
   </section>
 
 
-  ${_visWrap('od_apartments', `<section class="section" style="background:var(--white);">
-    <div class="container">
-      <div class="section-header mb-32">
-        <p class="hero-eyebrow text-gold">FEATURED</p>
-        <h2 class="text-navy">Apartments on Demand</h2>
-        <p>Explore our highly sought-after apartment projects available for a limited time.</p>
-      </div>
-      <div class="properties-grid" style="text-align:left;">
-        ${visibleOnDemandApartments.length > 0 
-          ? visibleOnDemandApartments.map(p => renderPropertyCard(p, 'apartments')).filter(Boolean).join('')
-          : '<div style="grid-column: 1 / -1; background: var(--white); border: 2px dashed rgba(243, 119, 33, 0.15); border-radius: var(--radius-md); padding: 40px 24px; text-align: center; color: var(--text-dark); box-shadow: var(--shadow-sm);"><div style="font-size: 2.2rem; margin-bottom: 12px;">🏢</div><p style="font-weight: 600; font-size: 1rem; margin-bottom: 16px; color: var(--navy);">No Featured Apartments On Demand Right Now</p><a href="#contact" class="btn btn-primary btn-sm" onclick="navigate(\'contact\')">📩 Enquire for Off-Market Deals</a></div>'
-        }
-      </div>
-    </div>
-  </section>`)}
-
-  ${_visWrap('od_plots', `<section class="section" style="background:var(--white);">
-    <div class="container">
-      <div class="section-header mb-32">
-        <p class="hero-eyebrow text-gold">FEATURED</p>
-        <h2 class="text-navy">Plots on Demand</h2>
-        <p>Explore our highly sought-after plot projects available for a limited time.</p>
-      </div>
-      <div class="properties-grid" style="text-align:left;">
-        ${visibleOnDemandPlots.length > 0 
-          ? visibleOnDemandPlots.map(p => renderPropertyCard(p, 'plots')).filter(Boolean).join('')
-          : '<div style="grid-column: 1 / -1; background: var(--off-white); border: 2px dashed rgba(243, 119, 33, 0.15); border-radius: var(--radius-md); padding: 40px 24px; text-align: center; color: var(--text-dark); box-shadow: var(--shadow-sm);"><div style="font-size: 2.2rem; margin-bottom: 12px;">🌿</div><p style="font-weight: 600; font-size: 1rem; margin-bottom: 16px; color: var(--navy);">No Featured Plots On Demand Right Now</p><a href="#contact" class="btn btn-primary btn-sm" onclick="navigate(\'contact\')">📩 Enquire for Off-Market Deals</a></div>'
-        }
-      </div>
-    </div>
-  </section>`)}
-
-  ${_visWrap('od_villas', `<section class="section" style="background:var(--white);">
-    <div class="container">
-      <div class="section-header mb-32">
-        <p class="hero-eyebrow text-gold">FEATURED</p>
-        <h2 class="text-navy">Villas on Demand</h2>
-        <p>Explore our highly sought-after villa projects available for a limited time.</p>
-      </div>
-      <div class="properties-grid" style="text-align:left;">
-        ${visibleOnDemandVillas.length > 0 
-          ? visibleOnDemandVillas.map(p => renderPropertyCard(p, 'villas')).filter(Boolean).join('')
-          : '<div style="grid-column: 1 / -1; background: var(--off-white); border: 2px dashed rgba(243, 119, 33, 0.15); border-radius: var(--radius-md); padding: 40px 24px; text-align: center; color: var(--text-dark); box-shadow: var(--shadow-sm);"><div style="font-size: 2.2rem; margin-bottom: 12px;">🏡</div><p style="font-weight: 600; font-size: 1rem; margin-bottom: 16px; color: var(--navy);">No Featured Villas On Demand Right Now</p><a href="#contact" class="btn btn-primary btn-sm" onclick="navigate(\'contact\')">📩 Enquire for Off-Market Deals</a></div>'
-        }
-      </div>
-    </div>
-  </section>`)}
+  ${featuredSection('Apartments on Demand', 'Explore our highly sought-after apartment projects available for a limited time.', '🏢', onDemandApartments, 'No Featured Apartments On Demand Right Now', 'apartments')}
+  ${featuredSection('Plots on Demand', 'Explore our highly sought-after plot projects available for a limited time.', '🌿', onDemandPlots, 'No Featured Plots On Demand Right Now', 'plots')}
+  ${featuredSection('Villas on Demand', 'Explore our highly sought-after villa projects available for a limited time.', '🏡', onDemandVillas, 'No Featured Villas On Demand Right Now', 'villas')}
 
   <!-- Social Media Handles -->
   <section class="section" style="background:var(--off-white); padding-bottom:60px;">
@@ -852,11 +993,7 @@ async function renderHome() {
         <p>Explore our curated selection of premium real estate across Hyderabad's most sought-after locations.</p>
       </div>
       <div class="cat-card-grid">
-        ${_visWrap('plots', `<div class="cat-card fade-up" onclick="navigate('plots')" style="background-image: url('https://images.unsplash.com/photo-1500382017468-9049fed747ef?q=80&w=1200&auto=format&fit=crop')"><div class="cat-card-overlay"></div><div class="cat-card-content"><h3>Plots</h3><span class="cat-card-link">View Listings →</span></div></div>`)}
-        ${_visWrap('flats', `<div class="cat-card fade-up fade-up-delay-1" onclick="navigate('flats')" style="background-image: url('https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?q=80&w=1200&auto=format&fit=crop')"><div class="cat-card-overlay"></div><div class="cat-card-content"><h3>Flats</h3><span class="cat-card-link">View Listings →</span></div></div>`)}
-        ${_visWrap('villas', `<div class="cat-card fade-up fade-up-delay-1" onclick="navigate('villas')" style="background-image: url('https://images.unsplash.com/photo-1613490493576-7fde63acd811?q=80&w=1200&auto=format&fit=crop')"><div class="cat-card-overlay"></div><div class="cat-card-content"><h3>Villas</h3><span class="cat-card-link">View Listings →</span></div></div>`)}
-        ${_visWrap('commercial', `<div class="cat-card fade-up fade-up-delay-2" onclick="navigate('commercial')" style="background-image: url('https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=1200&auto=format&fit=crop')"><div class="cat-card-overlay"></div><div class="cat-card-content"><h3>Commercial</h3><span class="cat-card-link">View Listings →</span></div></div>`)}
-        ${_visWrap('apartments', `<div class="cat-card fade-up fade-up-delay-3" onclick="navigate('apartments')" style="background-image: url('https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?q=80&w=1200&auto=format&fit=crop')"><div class="cat-card-overlay"></div><div class="cat-card-content"><h3>Apartments</h3><span class="cat-card-link">View Listings →</span></div></div>`)}
+        ${categoryCardsHtml}
       </div>
     </div>
   </section>
@@ -1085,19 +1222,23 @@ function renderPropertyTable(items, type) {
       const rowStatus = i.status === 'Sold Out' ? t('status_soldout') : t('status_available');
       const statusClass = i.status === 'Sold Out' ? 'table-status-sold' : 'table-status-available';
       const rowBtn = t('btn_view_details');
+      const visibilityBadge = isAdmin
+        ? (i.isVisible === false
+          ? '<span class="table-visibility-badge is-hidden">👁 Hidden</span>'
+          : '<span class="table-visibility-badge is-visible">👁 Visible</span>')
+        : '';
 
       const rowPrice = type === 'plots' ? `<td>${(typeof esc === 'function') ? esc(i.price || '-') : (i.price || '-')}</td>` : '';
-      const isVisible = i.isVisible !== false;
       const adminBtns = isAdmin ? `
-        <button class="btn-icon btn-visibility-toggle" style="margin-left:4px;" title="${isVisible ? 'Hide from visitors' : 'Show to visitors'}" onclick="event.stopPropagation(); togglePropertyVisibility('${type}','${i.id}', ${isVisible})">${isVisible ? '🙈' : '👁️'}</button>
+        <button class="btn-icon btn-visibility" style="margin-left:4px;" title="${i.isVisible === false ? 'Show on website' : 'Hide from website'}" onclick="event.stopPropagation(); togglePropertyVisibility('${type}','${i.id}')">${i.isVisible === false ? '<span class="eye-icon-hidden"><span class="eye-icon">👁</span><span class="eye-cross"></span></span>' : '<span class="eye-icon-visible"><span class="eye-icon">👁</span></span>'}</button>
         <button class="btn-icon btn-edit" style="margin-left:4px;" title="Edit" onclick="event.stopPropagation(); editProperty('${type}','${i.id}')">✏️</button>
         <button class="btn-icon btn-del" style="margin-left:4px;" title="Delete" onclick="event.stopPropagation(); deleteProperty('${type}','${i.id}')">🗑️</button>
       ` : '';
 
       rows += `
-        <tr onclick="viewDetailOrAuth('${type}','${i.id}')" style="cursor:pointer">
+        <tr onclick="viewDetailOrAuth('${type}','${i.id}')" style="cursor:pointer" class="${i.isVisible === false && isAdmin ? 'table-row-hidden' : ''}">
           <td class="table-id">${rowId}</td>
-          <td class="table-title">${rowTitle}</td>
+          <td class="table-title">${rowTitle}${visibilityBadge}</td>
           <td>${rowLocation}</td>
           <td>${rowVillage}</td>
           <td>${rowArea}</td>
@@ -1155,7 +1296,8 @@ async function renderListings(type) {
 
   const items = await DB[type].get();
   const isAdmin = Admin.isLoggedIn();
-  const visibleItems = isAdmin ? items : items.filter(item => item.isVisible !== false);
+  const visibleItems = normalizeListingItems(items);
+  const displayItems = isAdmin ? items : visibleItems;
 
   // Prepare hero header
   const heroHtml = `
@@ -1165,13 +1307,13 @@ async function renderListings(type) {
       <h1>${title.split(' ').slice(0, 1).join(' ')} <em>${title.split(' ').slice(1).join(' ')}</em></h1>
       <p>${sub}</p>
       <div style="margin-top:8px">
-        <span class="badge badge-gold">${visibleItems.length} Listing${visibleItems.length !== 1 ? 's' : ''} Available</span>
+        <span class="badge badge-gold">${displayItems.length} Listing${displayItems.length !== 1 ? 's' : ''} Available</span>
       </div>
     </div>
   </div>`;
 
   if (window.I18n && I18n.currentLanguage !== 'en') {
-    for (let item of visibleItems) {
+    for (let item of items) {
       if (item.title) item.title = await I18n.translateDynamic(item.title);
       if (item.description) item.description = await I18n.translateDynamic(item.description);
       if (item.location) item.location = await I18n.translateDynamic(item.location);
@@ -1195,7 +1337,7 @@ async function renderListings(type) {
   ${heroHtml}
   <section class="section">
     <div class="container">
-      ${visibleItems.length > 0 ? `
+      ${displayItems.length > 0 ? `
       <div class="filter-bar">
         <input type="text" class="filter-input" id="listing-search" placeholder="${t('filter_search_placeholder')}" oninput="filterAndSortListings('${type}', true)">
         <select class="filter-select" id="status-select" onchange="filterAndSortListings('${type}', true)">
@@ -1209,7 +1351,7 @@ async function renderListings(type) {
           <option value="price-desc">${t('filter_sort_desc')}</option>
         </select>
         ${viewToggleBtn}
-        <span class="listing-count"><span id="listing-count-text">${visibleItems.length}</span> ${t('filter_found_suffix')}</span>
+        <span class="listing-count"><span id="listing-count-text">${displayItems.length}</span> ${t('filter_found_suffix')}</span>
         ${adminAddBtn}
       </div>` : `${isAdmin ? `<div class="filter-bar">${adminAddBtn}</div>` : ''}`}
       
@@ -1220,10 +1362,10 @@ async function renderListings(type) {
     </div>
   </section>`;
 
-  await filterAndSortListings(type, true);
+  await filterAndSortListings(type, true, displayItems);
 }
 
-async function filterAndSortListings(type, resetPage = false) {
+async function filterAndSortListings(type, resetPage = false, preloadedItems = null) {
   if (resetPage) window._listingPage = 1;
   if (!window._listingPage) window._listingPage = 1;
 
@@ -1235,12 +1377,12 @@ async function filterAndSortListings(type, resetPage = false) {
   const statusVal = statusSelect ? statusSelect.value : 'all';
   const searchVal = searchInput ? searchInput.value.toLowerCase() : '';
 
-  let items = await DB[type].get();
-  const isAdmin = Admin.isLoggedIn();
-  if (!isAdmin) {
-    items = items.filter(item => item.isVisible !== false);
-  }
+  let items = preloadedItems !== null ? preloadedItems : await DB[type].get();
   const priceVal = p => parseFloat((p || '').replace(/[^0-9.]/g, '')) || 0;
+
+  if (!Admin.isLoggedIn()) {
+    items = items.filter(isPropertyVisibleToVisitor);
+  }
 
   if (window.I18n && I18n.currentLanguage !== 'en') {
     for (let item of items) {
@@ -1296,7 +1438,7 @@ async function filterAndSortListings(type, resetPage = false) {
       if (window._viewMode === 'table') {
         container.innerHTML = renderPropertyTable(paginatedItems, type);
       } else {
-        container.innerHTML = `<div class="properties-grid">${paginatedItems.map(i => renderPropertyCard(i, type)).filter(Boolean).join('')}</div>`;
+        container.innerHTML = `<div class="properties-grid">${paginatedItems.map(i => renderPropertyCard(i, type)).join('')}</div>`;
       }
     } catch (e) {
       console.error('DEBUG: ERROR during DOM update!', e);
@@ -1582,7 +1724,7 @@ async function submitReview() {
 
     pendingReviewImage = ''; // Clear after successful submission
     renderReviews();
-    syncAdminUI();
+    applyAdminUI();
   } catch (e) {
     console.error('Review submission error:', e);
     showToast('Failed to save review. Try again.', 'error');
@@ -2561,7 +2703,7 @@ async function loadGlobalSettings() {
 
 // ---- Init ----
 document.addEventListener('DOMContentLoaded', () => {
-  syncAdminUI();
+  applyAdminUI();
   loadGlobalSettings();
 
   let path = location.hash.replace('#', '');

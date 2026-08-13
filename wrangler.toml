@@ -1,0 +1,18 @@
+name = "nextgen-realtors"
+compatibility_date = "2024-01-01"
+
+pages_build_output_dir = "."
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200
+
+[vars]
+ENVIRONMENT = "production"
+
+# Uncomment and configure if you need environment variables
+# [vars]
+# FAST2SMS_API_KEY = "your-api-key"
+# FB_PAGE_ACCESS_TOKEN = "your-token"
+# FB_PAGE_ID = "your-page-id"
